@@ -88,6 +88,16 @@ struct block_iq3_s {
   std::uint8_t signs[32];
   std::uint8_t scales[4];
 };
+
+struct block_rocmfp4 {
+  std::uint16_t d;
+  std::uint8_t qs[16];
+};
+
+struct block_rocmfp4_fast {
+  std::uint8_t d;
+  std::uint8_t qs[16];
+};
 #pragma pack(pop)
 
 static_assert(sizeof(block_q4_K) == 144, "block_q4_K must be 144 bytes");
@@ -99,6 +109,8 @@ static_assert(sizeof(block_q8_0) == 34, "block_q8_0 must be 34 bytes");
 static_assert(sizeof(block_iq4_nl) == 18, "block_iq4_nl must be 18 bytes");
 static_assert(sizeof(block_iq4_xs) == 136, "block_iq4_xs must be 136 bytes");
 static_assert(sizeof(block_iq3_s) == 110, "block_iq3_s must be 110 bytes");
+static_assert(sizeof(block_rocmfp4) == 18, "block_rocmfp4 must be 18 bytes");
+static_assert(sizeof(block_rocmfp4_fast) == 17, "block_rocmfp4_fast must be 17 bytes");
 
 /// Non-linear 4-bit codebook shared by IQ4_NL and IQ4_XS.
 inline constexpr std::int8_t kValuesIq4Nl[16] = {
@@ -116,6 +128,8 @@ inline constexpr std::int8_t kValuesIq4Nl[16] = {
     case core::GgmlType::kQ8_1:
     case core::GgmlType::kQ8_0:
     case core::GgmlType::kIQ4_NL:
+    case core::GgmlType::kQ4_0_ROCMFP4:
+    case core::GgmlType::kQ4_0_ROCMFP4_FAST:
       return 32;
     case core::GgmlType::kQ2_K:
     case core::GgmlType::kIQ2_XXS:

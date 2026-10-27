@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "rocmfp4/rocmfp4_hip_scale.cuh"
 #include "rocmfp4/rocmfp4_hip_codebook.cuh"
 
 #include <cstdint>

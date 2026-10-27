@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "src/core/gguf_reader.hpp"
@@ -13,13 +14,32 @@
 
 namespace gufo::models::ornith122b {
 
+/// Non-owning view of one GGUF tensor. `rows` x `cols` follows the GGUF
+/// convention: cols (ne[0]) is the contiguous reduction dimension, rows
+/// (ne[1]) the output dimension, and `experts` (ne[2]) stacks whole matrices.
 struct TensorRef {
   const void* data{nullptr};
-  std::uint64_t cols{0};
-  std::uint64_t rows{0};
-  std::uint64_t experts{1};
   core::GgmlType type{core::GgmlType::kF32};
-  std::size_t size_bytes{0};
+  std::uint64_t cols{0};
+  std::uint64_t rows{1};
+  std::uint64_t experts{1};
+  std::uint64_t file_offset{0};  ///< Byte offset inside the owning shard.
+  std::uint32_t shard{0};        ///< Mapped region index in the reader.
+  std::string_view name;
+
+  [[nodiscard]] bool empty() const noexcept { return data == nullptr; }
+  [[nodiscard]] std::uint64_t ElementCount() const noexcept {
+    return cols * rows * experts;
+  }
+  /// Encoded bytes of one row (`cols` elements) in this format.
+  [[nodiscard]] std::size_t RowBytes() const noexcept;
+  [[nodiscard]] std::size_t SizeBytes() const noexcept {
+    return RowBytes() * rows * experts;
+  }
+  /// Base address of one stacked expert matrix.
+  [[nodiscard]] const std::uint8_t* Expert(std::uint64_t e) const noexcept {
+    return static_cast<const std::uint8_t*>(data) + RowBytes() * rows * e;
+  }
 };
 
 struct LayerWeights {
@@ -40,10 +60,10 @@ struct LayerWeights {
   TensorRef attn_qkv;
   TensorRef attn_gate;
   TensorRef ssm_conv1d;
-  TensorRef ssm_a;
   TensorRef ssm_alpha;
   TensorRef ssm_beta;
   TensorRef ssm_dt;
+  TensorRef ssm_a;
   TensorRef ssm_norm;
   TensorRef ssm_out;
 
@@ -62,7 +82,7 @@ struct LayerWeights {
   TensorRef shexp_down;       ///< ffn_down_shexp.weight (ROCmFP4)
 };
 
-struct Weights {
+struct ModelWeights {
   Config config;
 
   TensorRef token_embd;
@@ -71,9 +91,8 @@ struct Weights {
 
   std::vector<LayerWeights> layers;
 
-  [[nodiscard]] static std::optional<Weights> Load(
-      const core::GgufReader& gguf, const Config& config,
-      std::string* error_msg = nullptr);
+  [[nodiscard]] static std::optional<ModelWeights> Bind(
+      const core::GgufReader& reader, std::string* error_msg = nullptr);
 };
 
 }  // namespace gufo::models::ornith122b
