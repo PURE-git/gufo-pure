@@ -95,6 +95,13 @@ std::optional<Config> Config::FromGguf(const core::GgufReader& gguf,
   }
   c.num_layers = total_blocks - c.nextn_layers;
   c.hidden_size = r.U32(key("embedding_length"));
+  if (const auto* token_embd = gguf.FindTensor("token_embd.weight");
+      token_embd != nullptr && c.hidden_size > 0) {
+    const auto elements = token_embd->ElementCount();
+    if ((elements % c.hidden_size) == 0) {
+      c.vocab_size = static_cast<std::uint32_t>(elements / c.hidden_size);
+    }
+  }
   c.context_length = r.U32(key("context_length"), false, 262144);
   c.rms_eps = r.F32(key("attention.layer_norm_rms_epsilon"), 1e-6F);
 
