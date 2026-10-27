@@ -193,7 +193,10 @@ QwenDFlashGpuDraftBackend::QwenDFlashGpuDraftBackend(
     : executor_(std::move(executor)),
       config_(config),
       controller_(
-          config.policy, config.max_draft_tokens,
+          config.policy,
+          qwen27::LookupDFlashCap() != 0
+              ? std::min(config.max_draft_tokens, qwen27::LookupDFlashCap())
+              : config.max_draft_tokens,
           // The tied output tensor distinguishes the qualified Q8 target
           // (Q8_0 head) from Q4 (Q6_K head) for verification cost selection.
           executor_->GetModel().GetWeights().output.type ==
@@ -619,6 +622,58 @@ speculative::DraftProposal QwenDFlashGpuDraftBackend::ProposeImpl(
 
   proposal.tokens = proposed_tokens_;
   proposal_active_ = !proposal.tokens.empty();
+  const std::uint32_t lookup_room = std::min(
+      {max_tokens, context_budget, lookup_limit_ != 0 ? lookup_limit_ : 0U});
+  if (use_lookup && qwen27::LookupAppends() &&
+      proposal.tokens.size() == count && count < lookup_room) {
+    // Append mode: when the context plus DFlash2's drafts continues an
+    // earlier passage, copy what followed it after the drafts.
+    std::vector<tokenization::TokenId> context(prompt_tokens.begin(),
+                                               prompt_tokens.end());
+    context.insert(context.end(), proposal.tokens.begin(),
+                   proposal.tokens.end());
+    const auto match = lookup_.Find(context);
+    const std::size_t extra =
+        match.length == 0 ? 0
+                          : std::min<std::size_t>(lookup_room - count,
+                                                  context.size() - match.start);
+    const std::size_t width = proposal.candidates_per_token;
+    for (std::size_t i = 0; i < extra; ++i) {
+      const auto token = context[match.start + i];
+      proposal.tokens.push_back(token);
+      if (width != 0) {
+        // A point mass, padded with distinct zero-probability ids to the
+        // DFlash2 row width.
+        proposal.candidate_ids.push_back(token);
+        proposal.candidate_probabilities.push_back(1.0F);
+        for (tokenization::TokenId id = 0;
+             proposal.candidate_ids.size() % width != 0; ++id) {
+          if (id == token)
+            continue;
+          proposal.candidate_ids.push_back(id);
+          proposal.candidate_probabilities.push_back(0.0F);
+        }
+      }
+    }
+    lookup_tokens_ = static_cast<std::uint32_t>(extra);
+    proposed_tokens_ = proposal.tokens;
+  }
+  if (qwen27::DraftLog() != nullptr) {
+    // The probability the draft gave each proposed token (0 when greedy).
+    proposed_position_ = current_pos;
+    proposed_probabilities_.assign(proposal.tokens.size(), 0.0F);
+    const std::size_t width = proposal.candidates_per_token;
+    for (std::size_t row = 0; width != 0 && row < proposal.tokens.size();
+         ++row) {
+      for (std::size_t c = 0; c < width; ++c) {
+        if (proposal.candidate_ids[row * width + c] == proposal.tokens[row]) {
+          proposed_probabilities_[row] =
+              proposal.candidate_probabilities[row * width + c];
+          break;
+        }
+      }
+    }
+  }
   return proposal;
 }
 
@@ -828,6 +883,8 @@ void QwenDFlashGpuDraftBackend::Reset() noexcept {
   lookup_proposal_ = false;
   pending_target_features_.clear();
   proposed_tokens_.clear();
+  lookup_.Clear();
+  lookup_tokens_ = 0;
   primed_ = false;
   proposal_active_ = false;
 }

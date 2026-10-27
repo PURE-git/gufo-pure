@@ -41,6 +41,16 @@ class SnapshotState;
 struct PrefillCheckpoint;
 }  // namespace rocm
 
+/// Tokens the MTP draft head may propose.
+enum class DraftVocabulary {
+  kFull,
+  /// Special tokens plus every token whose text is ASCII (English, code,
+  /// numbers, markup and the unaccented pieces of Latin-script languages)
+  /// or ASCII with common typographic marks: about half of the vocabulary,
+  /// so each draft step reads half of the output head.
+  kLatinText,
+};
+
 struct ModelOptions {
   std::uint32_t max_context = 4096;
   /// Optional MTP draft sidecar (`mtp-...-shared-*.gguf`). Empty leaves
@@ -158,6 +168,17 @@ public:
                                  double* capture_ms = nullptr);
   [[nodiscard]] bool Evaluate(std::int32_t token,
                               std::string* error_msg = nullptr);
+  /// Appends `tokens` through the decode arithmetic: one token as a decode
+  /// step, more as a fully accepted speculative verification (at most
+  /// MaxVerifyWidth()). With `prefill`, through the prompt arithmetic
+  /// instead (a session without MTP). `rows` receives every token's
+  /// next-token logits (tokens.size() * vocab). For numerical A/B of the
+  /// kernels.
+  [[nodiscard]] bool TeacherForce(std::span<const std::int32_t> tokens,
+                                  std::vector<float>* rows,
+                                  std::string* error_msg = nullptr,
+                                  bool prefill = false);
+  [[nodiscard]] std::uint32_t MaxVerifyWidth() const noexcept;
   struct DecodeResult {
     std::vector<std::int32_t> tokens;
     bool stop{false};
@@ -202,7 +223,8 @@ public:
       std::span<const AdvanceRequest> requests,
       std::string* error_msg = nullptr);
   [[nodiscard]] std::span<const float> Logits() const noexcept {
-    return valid_ ? std::span<const float>(logits_) : std::span<const float>{};
+    return valid_ && EnsureFrontier() ? std::span<const float>(logits_)
+                                      : std::span<const float>{};
   }
   [[nodiscard]] std::uint32_t Position() const noexcept;
   [[nodiscard]] std::uint32_t ContextSize() const noexcept;
@@ -322,7 +344,15 @@ private:
   std::shared_ptr<Model> model_;
   std::unique_ptr<rocm::Session> session_;
   std::vector<std::int32_t> tokens_;
-  std::vector<float> logits_;
+  mutable std::vector<float> logits_;
+  /// A sampled cycle's rollback left the frontier row in flight (see
+  /// FinishDecode): logits_ is stale until EnsureFrontier fetches it.
+  mutable bool frontier_pending_{false};
+  bool EnsureFrontier(std::string* error_msg = nullptr) const;
+  /// GPU-selected top candidates of logits_, valid only from a sampled MTP
+  /// cycle's FinishDecode until the next PrepareDecode consumes them.
+  MtpCandidateLogits anchor_candidates_{};
+  bool anchor_candidates_valid_{false};
   std::int32_t draft_token_{0};
   std::vector<float> verify_logits_;
   std::uint32_t hidden_base_{0};  ///< first position whose hidden row is kept

@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "src/core/hip/hip_utils.hpp"
 #include "src/models/qwen/hip/executor.hpp"
+#include "src/models/qwen/hip/kernels/copy_27b.hpp"
 #include "src/models/qwen/hip/ops/ssm.hpp"
 
 namespace gufo::hip {
@@ -47,6 +49,17 @@ void QwenGpuArena::SyncLivePointers() noexcept {
   d_ssm_deltanet_state = d_ssm_deltanet_buffers_[live_recurrent_];
 }
 
+// Windows: save lazily. A speculative cycle saves ~160 MB of recurrent state
+// before verification and copies it back after a rejection; instead the
+// saved state aliases the live one and verification/replay write their
+// result into the spare buffer (out-of-place kernels), so the normal cycle
+// copies nothing. Identical bytes either way.
+#ifdef _WIN32
+constexpr bool kLazyRecurrentSave = true;
+#else
+constexpr bool kLazyRecurrentSave = false;
+#endif
+
 void QwenGpuArena::SaveState(std::uint32_t valid_context) {
   if (valid_context > max_context_) {
     throw std::length_error("saved GPU state exceeds the context length");
@@ -68,6 +81,16 @@ void QwenGpuArena::SaveState(std::uint32_t valid_context) {
 void QwenGpuArena::RestoreState() {
   if (!has_saved_state_) {
     throw std::logic_error("GPU state has not been saved");
+  }
+  if (kLazyRecurrentSave) {
+    // Aliased: the live state is the saved state. Otherwise the spare holds
+    // the saved state untouched since SaveState: make it live again.
+    if (!saved_aliases_live_) {
+      std::swap(d_ssm_conv_state, d_saved_ssm_conv_state_);
+      std::swap(d_ssm_deltanet_state, d_saved_ssm_deltanet_state_);
+      saved_aliases_live_ = true;
+    }
+    return;
   }
 
   live_recurrent_ = saved_recurrent_;

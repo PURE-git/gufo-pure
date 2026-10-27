@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <string_view>
 
 #include "src/core/platform/env.hpp"
@@ -23,17 +24,33 @@ void String(std::ostream& out, std::string_view text) {
   out.write(text.data(), static_cast<std::streamsize>(text.size()));
 }
 
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall GetProcessHandleCount(
+    void* process, unsigned long* count);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
+#endif
+
 std::size_t OpenDescriptors() {
+#ifdef _WIN32
+  // Every mapped file and lock is a kernel handle on Windows.
+  unsigned long count = 0;
+  (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+  return count;
+#else
   std::size_t count = 0;
   for ([[maybe_unused]] const auto& file :
        std::filesystem::directory_iterator("/proc/self/fd"))
     ++count;
   return count;
+#endif
 }
 }  // namespace
 
 int main() {
-  char directory[] = "/tmp/gufo-ds4-load-XXXXXX";
+  std::string directory_storage =
+      (std::filesystem::temp_directory_path() / "gufo-ds4-load-XXXXXX")
+          .string();
+  char* directory = directory_storage.data();
   assert(::mkdtemp(directory));
   const auto root = std::filesystem::path(directory);
   const auto path = root / "invalid.gguf";
@@ -67,7 +84,8 @@ int main() {
     }
     for (int repeat = 0; repeat < 3; ++repeat) {
       ds4_engine* engine = nullptr;
-      const ds4_engine_options options{path.c_str(), nullptr};
+      const std::string path_text = path.string();
+      const ds4_engine_options options{path_text.c_str(), nullptr};
       assert(ds4_engine_open(&engine, &options) != 0);
       assert(engine == nullptr);
       // Failure must release both mapped files and the process lock.
@@ -76,6 +94,12 @@ int main() {
       // A separately held lock must cause another ordinary load failure.
       assert(ds4_engine_open(&engine, &options) != 0 && engine == nullptr);
       ::close(lock);
+#ifdef _WIN32
+      // Process handles include runtime state the first load creates once
+      // (threads, events); measure growth from the first attempt instead.
+      if (fixture == 0 && repeat == 0)
+        descriptors = OpenDescriptors();
+#endif
       assert(OpenDescriptors() == descriptors);
     }
   }

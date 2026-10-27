@@ -64,7 +64,8 @@ struct QwenSampledVerificationResult {
 
 struct QwenGpuWeightRegion {
   // Original reader address for tensor offsets; host_copy owns GPU-visible
-  // immutable bytes, backed by transparent huge pages when available.
+  // immutable bytes, backed by transparent huge pages when available. On
+  // Windows host_copy is null and device_data owns a device allocation.
   const void* host_data{nullptr};
   void* device_data{nullptr};
   void* host_copy{nullptr};
@@ -373,6 +374,23 @@ public:
   [[nodiscard]] std::optional<std::size_t> GetTargetLayerCaptureIndex(
       std::uint32_t layer) const noexcept;
 
+  // Lazy recurrent-state save (Windows; see ssm_replay.cpp). After SaveState
+  // the saved state is the live state, until something updates it:
+  // verification and replay write their result to the spare buffer and swap
+  // the two (CommitOutOfPlaceState); any other in-place update first copies
+  // the live state into the spare (MaterializeSavedState).
+  [[nodiscard]] bool SavedStateAliasesLive() const noexcept {
+    return saved_aliases_live_;
+  }
+  [[nodiscard]] float* SpareConvState() const noexcept {
+    return d_saved_ssm_conv_state_;
+  }
+  [[nodiscard]] void* SpareDeltanetState() const noexcept {
+    return d_saved_ssm_deltanet_state_;
+  }
+  void CommitOutOfPlaceState() noexcept;
+  void MaterializeSavedState();
+
 private:
   void FreeAll() noexcept;
   friend class models::qwen::ContinuationAdapter;
@@ -403,6 +421,7 @@ private:
   std::uint32_t replay_last_position_{0};
   std::size_t replay_captured_positions_{0};
   bool has_saved_state_{false};
+  bool saved_aliases_live_{false};
   bool replay_capture_active_{false};
 };
 
@@ -637,6 +656,17 @@ private:
   std::size_t last_hidden_offset_{0};
   float* d_target_layer_features_{nullptr};
   GpuSamplingWorkspace sampling_workspace_;
+  // Windows: coherent host-mapped words for a sampled-verification row's
+  // token, acceptance flag and a sequence number the host polls instead of
+  // synchronizing the stream (copy_27b.hpp, WaitPublished27).
+  struct PinnedHostFree {
+    void operator()(std::uint32_t* pointer) const noexcept {
+      (void)hipHostFree(pointer);
+    }
+  };
+  std::unique_ptr<std::uint32_t, PinnedHostFree> h_row_result_;
+  std::uint32_t* d_row_result_{nullptr};
+  std::uint32_t row_sequence_{0};
   std::optional<tokenization::TokenId> next_token_;
   bool capture_prompt_hidden_{false};
   bool replaying_ssm_state_{false};

@@ -107,8 +107,18 @@ endif()
 if (EXISTS /opt/rocm)
   list(APPEND CMAKE_SYSTEM_PREFIX_PATH /opt/rocm)
 endif()
+if (WIN32 AND DEFINED ENV{HIP_PATH})
+  list(APPEND CMAKE_PREFIX_PATH $ENV{HIP_PATH})
+endif()
 
 if (ENGINE_ENABLE_HIP)
+  if (WIN32 AND NOT CMAKE_HIP_FLAGS MATCHES "compat/win32/hip_include")
+    # Before enable_language so CMake's compiler probe gets it too; see the
+    # header for the MSVC 14.5x <cmath> conflict it works around.
+    set(CMAKE_HIP_FLAGS
+      "${CMAKE_HIP_FLAGS} -I${CMAKE_SOURCE_DIR}/compat/win32/hip_include"
+      CACHE STRING "HIP flags" FORCE)
+  endif()
   enable_language(HIP)
   # clang-cl compiles HIP like C++ on Windows, so ccache covers it there.
   if (GUFO_CCACHE_CLANG_CL)
@@ -369,6 +379,10 @@ if (ENGINE_ENABLE_HIP)
     src/core/hip/weight_upload.cpp
     src/core/speculative/speculative_verifier.cpp
   )
+  if (WIN32)
+    target_sources(gufo_core PRIVATE src/core/platform/device_memory.cpp)
+    target_link_libraries(gufo_core PUBLIC dxgi)
+  endif()
   target_compile_definitions(gufo_core PUBLIC ENGINE_ENABLE_HIP=1)
   target_include_directories(gufo_core SYSTEM PRIVATE
     ${HIPCUB_INCLUDE_DIR}
@@ -465,8 +479,15 @@ if (BUILD_TESTING OR GUFO_BUILD_TOOLS)
 endif()
 
 if (ENGINE_ENABLE_HIP AND GUFO_BUILD_TOOLS)
-  find_path(ROCTX_INCLUDE_DIR rocprofiler-sdk-roctx/roctx.h REQUIRED)
-  find_library(ROCTX_LIBRARY NAMES rocprofiler-sdk-roctx REQUIRED)
+  # TheRock's Windows distribution has no rocprofiler-sdk; the markers are
+  # optional there and the benchmark runs without them.
+  if (WIN32)
+    find_path(ROCTX_INCLUDE_DIR rocprofiler-sdk-roctx/roctx.h)
+    find_library(ROCTX_LIBRARY NAMES rocprofiler-sdk-roctx)
+  else()
+    find_path(ROCTX_INCLUDE_DIR rocprofiler-sdk-roctx/roctx.h REQUIRED)
+    find_library(ROCTX_LIBRARY NAMES rocprofiler-sdk-roctx REQUIRED)
+  endif()
   add_executable(gufo-kernel-bench
     src/cli/bench/kernel_bench_main.cpp
   )
@@ -477,8 +498,15 @@ if (ENGINE_ENABLE_HIP AND GUFO_BUILD_TOOLS)
   target_link_libraries(gufo-kernel-bench PRIVATE
     gufo_kernel_bench_support
     gufo_diagnostics
-    gufo_core
-    ${ROCTX_LIBRARY})
+    gufo_core)
+  if (ROCTX_INCLUDE_DIR AND ROCTX_LIBRARY)
+    target_include_directories(gufo-kernel-bench SYSTEM PRIVATE
+      ${ROCTX_INCLUDE_DIR})
+    target_link_libraries(gufo-kernel-bench PRIVATE ${ROCTX_LIBRARY})
+  else()
+    message(STATUS "gufo: rocprofiler-sdk roctx not found; kernel-bench markers disabled")
+    target_compile_definitions(gufo-kernel-bench PRIVATE GUFO_NO_ROCTX=1)
+  endif()
 
   add_executable(tune_hipblaslt tools/bench/tune_hipblaslt.cpp)
   target_link_libraries(tune_hipblaslt PRIVATE gufo_core hip::host)
@@ -1332,4 +1360,14 @@ endif()
 
 if (BUILD_TESTING)
   include(cmake/Checks.cmake)
+endif()
+
+# Qwen3.6-35B-A3B (qwen35moe): its runtime library and the gufo-a3b driver.
+add_subdirectory(src/models/qwen36_a3b)
+# `gufo serve` runs qwen35moe GGUFs through its text runner
+# (src/cli/serve/inference_backend.cpp); OFF builds gufo.exe without it.
+option(GUFO_WITH_A3B "gufo serve for Qwen3.6-35B-A3B (qwen35moe) GGUFs" ON)
+if(GUFO_WITH_A3B AND TARGET gufo_qwen36_a3b)
+  target_link_libraries(gufo PRIVATE gufo_qwen36_a3b)
+  target_compile_definitions(gufo PRIVATE GUFO_WITH_A3B=1)
 endif()

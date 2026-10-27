@@ -51,6 +51,7 @@ static int g_rocm_mmq_ready;
 #ifdef __HIP_PLATFORM_AMD__
 #include "ds4_rocm_hipblaslt.hip.hpp"
 #include "src/core/hip/snapshot_transfer.hpp"
+#include "src/core/platform/device_memory.hpp"
 #endif
 enum {
     DS4_ROCM_N_EXPERT = 256u,
@@ -402,7 +403,7 @@ static int hip_q8_f16_cache_has_budget(uint64_t request_bytes, const char *label
 
     size_t free_b = 0;
     size_t total_b = 0;
-    hipError_t err = hipMemGetInfo(&free_b, &total_b);
+    hipError_t err = gufo::platform::DeviceMemoryInfo(&free_b, &total_b);
     if (err != hipSuccess) {
         gufo::server::Logger::LogFormatted(
                 gufo::server::LogLevel::kWarn, "ds4",
@@ -901,7 +902,7 @@ extern "C" int ds4_gpu_should_use_managed_kv_cache(uint64_t kv_cache_bytes, uint
 
     size_t free_b = 0;
     size_t total_b = 0;
-    hipError_t err = hipMemGetInfo(&free_b, &total_b);
+    hipError_t err = gufo::platform::DeviceMemoryInfo(&free_b, &total_b);
     if (err != hipSuccess) {
         (void)hipGetLastError();
         return 0;

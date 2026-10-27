@@ -154,6 +154,13 @@ void ReleaseWeightRegions(std::vector<QwenGpuWeightRegion>& regions) noexcept {
     }
     return false;
   }
+#ifdef _WIN32
+  if (std::ranges::all_of(source_regions, [](const auto& region) {
+        return region.file_descriptor >= 0;
+      })) {
+    return UploadDeviceRegions(source_regions, weight_regions, error_msg);
+  }
+#endif
 
   weight_regions.resize(source_regions.size());
   std::vector<std::size_t> device_regions;

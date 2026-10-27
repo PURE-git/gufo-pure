@@ -12,6 +12,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <string>
+
 #include <algorithm>
 #include <array>
 #include <chrono>

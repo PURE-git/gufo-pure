@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <string>

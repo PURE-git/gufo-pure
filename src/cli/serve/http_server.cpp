@@ -312,7 +312,7 @@ std::string BuildResponseHead(const HttpResponse& resp,
   out += resp.reason;
   out += "\r\n";
   if (resp.status != 101 && !HasHeader(resp, "content-type")) {
-    out += "Content-Type: application/json\r\n";
+    out += "Content-Type: application/json; charset=utf-8\r\n";
   }
   if (content_length.has_value()) {
     out += "Content-Length: " + std::to_string(*content_length) + "\r\n";
@@ -2357,9 +2357,18 @@ void HttpServer::handle_connection(int client_fd,
         }
         if (ok) {
           req.body = std::move(body);
+#ifdef _WIN32
+          // WSAPoll does not report a connection that stop() shut down
+          // locally, so a stopping server cancels its generations directly.
+          req.is_cancelled = [this, client_fd] {
+            return stopped_.load(std::memory_order_acquire) ||
+                   IsPeerDisconnected(client_fd);
+          };
+#else
           req.is_cancelled = [client_fd] {
             return IsPeerDisconnected(client_fd);
           };
+#endif
         }
       }
     }

@@ -45,8 +45,10 @@ tokenization::TokenId QwenGpuExecutor::ForwardPromptBatch(
   if (prompt_tokens.empty()) {
     return 0;
   }
+  const qwen27::ScopedPromptStep step("target_prefill", prompt_tokens.size());
   replaying_ssm_state_ = false;
   arena_.DisableSsmReplayCapture();
+  arena_.MaterializeSavedState();  // prefill updates the state in place
   if (capture_prompt_hidden_) {
     h_prompt_hidden_.Clear();
     const std::size_t captured_layers =

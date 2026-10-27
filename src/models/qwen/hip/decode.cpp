@@ -29,6 +29,8 @@ tokenization::TokenId QwenGpuExecutor::ForwardToken(
     replaying_ssm_state_ = false;
     arena_.DisableSsmReplayCapture();
   }
+  // The decode step updates the recurrent state in place.
+  arena_.MaterializeSavedState();
 
   arena_.MarkSsmReplayPosition(pos);
   // One recurrent pass per step. Its buffer pair is part of the graph key below

@@ -568,6 +568,33 @@ extern "C" int qfn_mmq_q5_K_moe_raw(
                                             nullptr, nullptr);
 }
 
+extern "C" int qfn_mmq_iq3_s_moe_raw(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        hipStream_t stream) {
+    return qfn_mmq_moe_impl<GGML_TYPE_IQ3_S>("qfn_mmq_iq3_s_moe_raw", W, X, ids, out, M, K,
+                                             n_tokens, n_experts, n_expert_used, stream,
+                                             nullptr, nullptr);
+}
+
+extern "C" int qfn_mmq_iq4_xs_moe_raw(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        hipStream_t stream) {
+    return qfn_mmq_moe_impl<GGML_TYPE_IQ4_XS>("qfn_mmq_iq4_xs_moe_raw", W, X, ids, out, M, K,
+                                              n_tokens, n_experts, n_expert_used, stream,
+                                              nullptr, nullptr);
+}
+
+extern "C" int qfn_mmq_iq4_nl_moe_raw(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        hipStream_t stream) {
+    return qfn_mmq_moe_impl<GGML_TYPE_IQ4_NL>("qfn_mmq_iq4_nl_moe_raw", W, X, ids, out, M, K,
+                                              n_tokens, n_experts, n_expert_used, stream,
+                                              nullptr, nullptr);
+}
+
 extern "C" int qfn_mmq_q4_K_moe_pair_unique(
     const void * W_a, const void * W_b, const float * X, const int32_t * ids,
     float * out_a, float * out_b, int M, int K, int n_tokens, int n_experts,
@@ -598,13 +625,18 @@ extern "C" int qfn_mmq_quantize_q8_1(
 }
 
 // The 320-row HC down projection has too few waves to hide its long K
-// loads. Fetch two iterations together, retaining the MMVQ sum order.
-template<int tokens, bool grouped = false>
+// loads. Fetch `prefetch` iterations together, retaining the MMVQ sum
+// order: every lane still accumulates its blocks in ascending order (see
+// kHcDownPrefetch for the one-token exception). With `silu` the write applies the
+// mixer's SiluScale (silu(x * scale)) with the same expression, saving its
+// separate launch.
+template<int tokens, bool grouped = false, int prefetch = 2, bool silu = false>
 __launch_bounds__(32) __global__ static void qfn_q8_hc_down_kernel(
         const block_q8_0* __restrict__ weights,
-        const block_q8_1* __restrict__ input, float* __restrict__ output) {
+        const block_q8_1* __restrict__ input, float* __restrict__ output,
+        float silu_scale = 1.0f) {
     constexpr int blocks = 10240 / QK8_0;
-    constexpr int prefetch = 2;
+    static_assert(blocks % (8 * prefetch) == 0, "prefetch must tile K");
     if constexpr (grouped) {
         input += size_t(blockIdx.y) * tokens * blocks;
         output += size_t(blockIdx.y) * tokens * 320;
@@ -657,7 +689,15 @@ __launch_bounds__(32) __global__ static void qfn_q8_hc_down_kernel(
 #pragma unroll
     for (int t = 0; t < tokens; ++t) {
         sum[t] = warp_reduce_sum<32>(sum[t]);
-        if (lane == 0) output[t * 320 + blockIdx.x] = sum[t];
+        if (lane == 0) {
+            float value = sum[t];
+            if constexpr (silu) {
+                // Same expression as SiluScaleKernel: SiluF(x * scale).
+                const float x = value * silu_scale;
+                value = x * (1.0f / (1.0f + __expf(-x)));
+            }
+            output[t * 320 + blockIdx.x] = value;
+        }
     }
 }
 
@@ -683,14 +723,33 @@ static int prepare_decode_kernels() {
 
 template<int tokens = 1>
 static void launch_q8_hc_down(const void* weights, const void* input,
-                              float* output, int rows, hipStream_t stream) {
+                              float* output, int rows, hipStream_t stream,
+                              float silu_scale = 1.0f) {
     if (rows == tokens) {
-        qfn_q8_hc_down_kernel<tokens><<<320, 32, 0, stream>>>(
-            static_cast<const block_q8_0*>(weights),
-            static_cast<const block_q8_1*>(input), output);
+        const auto* w = static_cast<const block_q8_0*>(weights);
+        const auto* x = static_cast<const block_q8_1*>(input);
+        if (g_hc_down_deep_prefetch) {
+            qfn_q8_hc_down_kernel<tokens, false, kHcDownPrefetch<tokens>, silu>
+                <<<320, 32, 0, stream>>>(w, x, output, silu_scale);
+        } else {
+            qfn_q8_hc_down_kernel<tokens, false, 2, silu>
+                <<<320, 32, 0, stream>>>(w, x, output, silu_scale);
+        }
     } else if constexpr (tokens < MMVQ_MAX_BATCH_SIZE) {
-        launch_q8_hc_down<tokens + 1>(weights, input, output, rows, stream);
+        launch_q8_hc_down<tokens + 1, silu>(weights, input, output, rows,
+                                            stream, silu_scale);
     }
+}
+
+extern "C" int qfn_mmq_q8_0_hc_down_silu(const void* W, const void* X_q8,
+                                         float* out_f32, int N, float scale,
+                                         hipStream_t stream) {
+    if (!W || !X_q8 || !out_f32 || N <= 0 || N > MMVQ_MAX_BATCH_SIZE) {
+        fprintf(stderr, "qfn_mmq_q8_0_hc_down_silu: bad arguments N=%d\n", N);
+        return -1;
+    }
+    launch_q8_hc_down<1, true>(W, X_q8, out_f32, N, stream, scale);
+    return hipGetLastError() == hipSuccess ? 0 : -3;
 }
 
 extern "C" int qfn_mmq_q8_0_dense_vec_preq(const void* W, const void* W_gate,
@@ -732,5 +791,11 @@ template void mul_mat_q_case<GGML_TYPE_Q4_K>(
 template void mul_mat_q_case<GGML_TYPE_Q5_1>(
     ggml_backend_hip_context&, const mmq_args&, hipStream_t);
 template void mul_mat_q_case<GGML_TYPE_Q5_K>(
+    ggml_backend_hip_context&, const mmq_args&, hipStream_t);
+template void mul_mat_q_case<GGML_TYPE_IQ3_S>(
+    ggml_backend_hip_context&, const mmq_args&, hipStream_t);
+template void mul_mat_q_case<GGML_TYPE_IQ4_XS>(
+    ggml_backend_hip_context&, const mmq_args&, hipStream_t);
+template void mul_mat_q_case<GGML_TYPE_IQ4_NL>(
     ggml_backend_hip_context&, const mmq_args&, hipStream_t);
 } // namespace qfn_mmq
