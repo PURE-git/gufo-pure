@@ -41,6 +41,8 @@ enum class GgmlType : std::uint16_t {
   kIQ4_XS = 23,
   kI32 = 26,
   kBF16 = 30,
+  kQ4_0_ROCMFP4 = 100,
+  kQ4_0_ROCMFP4_FAST = 101,
 };
 
 [[nodiscard]] constexpr std::string_view ToString(GgmlType type) noexcept {
@@ -85,6 +87,10 @@ enum class GgmlType : std::uint16_t {
       return "I32";
     case GgmlType::kBF16:
       return "BF16";
+    case GgmlType::kQ4_0_ROCMFP4:
+      return "Q4_0_ROCMFP4";
+    case GgmlType::kQ4_0_ROCMFP4_FAST:
+      return "Q4_0_ROCMFP4_FAST";
   }
   return "UNKNOWN";
 }

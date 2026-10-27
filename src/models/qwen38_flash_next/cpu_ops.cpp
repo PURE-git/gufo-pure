@@ -35,6 +35,48 @@ void DequantizeQ5_1(const std::uint8_t* src, float* dst, std::size_t k) {
   }
 }
 
+inline std::int8_t RocmFp4Decode(std::uint8_t q) noexcept {
+  q &= 0x0f;
+  const int mag3 = q & 0x07;
+  const int mag = mag3 <= 4 ? mag3 : 2 * mag3 - 4;
+  return (q & 0x08) ? -mag : mag;
+}
+
+inline float RocmFp4Ue4m3ToFp32Half(std::uint8_t e) noexcept {
+  if (e > 0x7e) return 0.0f;
+  const int exp = (e >> 3) & 0x0f;
+  const int mant = e & 0x07;
+  if (exp == 0) {
+    return static_cast<float>(mant) * (1.0f / 1024.0f);
+  }
+  return static_cast<float>(8 + mant) * std::ldexp(1.0f, exp - 11);
+}
+
+void DequantizeROCmFP4(const std::uint8_t* src, float* dst, std::size_t k) {
+  const std::size_t nb = k / 32;
+  for (std::size_t ib = 0; ib < nb; ++ib) {
+    const std::uint8_t* blk = src + ib * 18;
+    const float d0 = RocmFp4Ue4m3ToFp32Half(blk[16]);
+    const float d1 = RocmFp4Ue4m3ToFp32Half(blk[17]);
+    for (int j = 0; j < 16; ++j) {
+      dst[ib * 32 + j]      = static_cast<float>(RocmFp4Decode(blk[j] & 0x0f)) * d0;
+      dst[ib * 32 + j + 16] = static_cast<float>(RocmFp4Decode(blk[j] >> 4))   * d1;
+    }
+  }
+}
+
+void DequantizeROCmFP4_Fast(const std::uint8_t* src, float* dst, std::size_t k) {
+  const std::size_t nb = k / 32;
+  for (std::size_t ib = 0; ib < nb; ++ib) {
+    const std::uint8_t* blk = src + ib * 17;
+    const float d = RocmFp4Ue4m3ToFp32Half(blk[16]);
+    for (int j = 0; j < 16; ++j) {
+      dst[ib * 32 + j]      = static_cast<float>(RocmFp4Decode(blk[j] & 0x0f)) * d;
+      dst[ib * 32 + j + 16] = static_cast<float>(RocmFp4Decode(blk[j] >> 4))   * d;
+    }
+  }
+}
+
 }  // namespace
 
 void DequantizeRow(const TensorRef& t, std::uint64_t e, std::uint64_t row,
@@ -77,6 +119,12 @@ void DequantizeRow(const TensorRef& t, std::uint64_t e, std::uint64_t row,
       break;
     case GgmlType::kQ6_K:
       gufo::quant::DequantizeQ6_K(src, out, k);
+      break;
+    case GgmlType::kQ4_0_ROCMFP4:
+      DequantizeROCmFP4(src, out, k);
+      break;
+    case GgmlType::kQ4_0_ROCMFP4_FAST:
+      DequantizeROCmFP4_Fast(src, out, k);
       break;
     default:
       std::memset(out, 0, k * sizeof(float));

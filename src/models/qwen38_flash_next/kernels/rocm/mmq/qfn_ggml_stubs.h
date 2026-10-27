@@ -166,6 +166,8 @@ enum ggml_type {
     GGML_TYPE_MXFP4   = 39,
     GGML_TYPE_NVFP4   = 40,
     GGML_TYPE_Q1_0    = 41,
+    GGML_TYPE_Q4_0_ROCMFP4      = 100,
+    GGML_TYPE_Q4_0_ROCMFP4_FAST = 101,
     GGML_TYPE_COUNT   = 42,
 };
 
@@ -252,6 +254,8 @@ inline size_t ggml_type_size(enum ggml_type t) {
         case GGML_TYPE_IQ4_NL:  return 18;
         case GGML_TYPE_IQ4_XS:  return 136;
         case GGML_TYPE_MXFP4:   return 17;
+        case GGML_TYPE_Q4_0_ROCMFP4:      return 18;
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST: return 17;
         case GGML_TYPE_NVFP4:   return 18;
         case GGML_TYPE_Q1_0:    return 36;
         default:                return 0;
@@ -277,6 +281,8 @@ inline int64_t ggml_blck_size(enum ggml_type t) {
         case GGML_TYPE_Q8_1:
         case GGML_TYPE_IQ4_NL:
         case GGML_TYPE_MXFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
             return 32;
         case GGML_TYPE_NVFP4:
             return 64;

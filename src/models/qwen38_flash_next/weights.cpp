@@ -35,6 +35,10 @@ struct Format {
       return {256, 176};
     case GgmlType::kQ6_K:
       return {256, 210};
+    case GgmlType::kQ4_0_ROCMFP4:
+      return {32, 18};
+    case GgmlType::kQ4_0_ROCMFP4_FAST:
+      return {32, 17};
     default:
       return {0, 0};
   }
@@ -141,7 +145,8 @@ struct Binder {
     const auto dense = {GgmlType::kQ8_0, GgmlType::kBF16, GgmlType::kF16,
                         GgmlType::kF32};
     const auto experts = {GgmlType::kQ4_K, GgmlType::kQ5_K, GgmlType::kQ6_K,
-                          GgmlType::kQ5_1, GgmlType::kQ8_0};
+                          GgmlType::kQ5_1, GgmlType::kQ8_0,
+                          GgmlType::kQ4_0_ROCMFP4, GgmlType::kQ4_0_ROCMFP4_FAST};
 
     l.hc_attn = Mixer(p + "hc_attn", c, true);
     l.hc_ffn = Mixer(p + "hc_ffn", c, true);
