@@ -1,9 +1,6 @@
 #include "src/models/qwen36_a3b/engine.hpp"
 
-#ifdef _WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#endif
+#include "src/core/platform/mapped_file.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -77,7 +74,7 @@ bool UploadRegions(std::span<const core::GgufMappedRegion> src,
       error = std::move(message);
   };
   dst.assign(src.size(), nullptr);
-  std::vector<int> fds(src.size(), -1);
+  std::vector<gufo::platform::PlatformFile> fds(src.size(), gufo::platform::kInvalidFile);
   struct Chunk {
     std::size_t region;
     std::size_t offset;
@@ -90,10 +87,10 @@ bool UploadRegions(std::span<const core::GgufMappedRegion> src,
       break;
     }
     (void)hipMemset(static_cast<std::uint8_t*>(dst[i]) + src[i].size, 0, kTail);
-    const auto path = "/proc/self/fd/" + std::to_string(src[i].file_descriptor);
-    fds[i] = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_CONCURRENT_RANDOM);
-    if (fds[i] < 0) {
-      fail(std::string("cannot reopen GGUF: ") + std::strerror(errno));
+    bool direct = false;
+    fds[i] = gufo::platform::ReopenRandomReadFile(src[i].file_descriptor, direct);
+    if (!gufo::platform::FileValid(fds[i])) {
+      fail("cannot reopen GGUF: failed to open shard");
       break;
     }
     for (std::size_t off = 0; off < src[i].size; off += kChunk)
@@ -114,14 +111,14 @@ bool UploadRegions(std::span<const core::GgufMappedRegion> src,
       const auto [region, offset] = chunks[index];
       const auto bytes = std::min(kChunk, src[region].size - offset);
       for (std::size_t got = 0; got < bytes && !failed;) {
-        const auto n = ::pread(fds[region], static_cast<char*>(staging) + got,
-                               bytes - got, static_cast<off_t>(offset + got));
-        if (n <= 0) {
-          fail(std::string("GGUF read failed: ") +
-               (n == 0 ? "unexpected end of file" : std::strerror(errno)));
+        const auto n = gufo::platform::ReadFileAt(
+            fds[region], static_cast<char*>(staging) + got, bytes - got,
+            offset + got);
+        if (n == 0) {
+          fail("GGUF read failed: unexpected end of file");
           break;
         }
-        got += static_cast<std::size_t>(n);
+        got += n;
       }
       if (failed)
         break;
@@ -144,9 +141,9 @@ bool UploadRegions(std::span<const core::GgufMappedRegion> src,
       readers.emplace_back(reader);
     reader();
   }
-  for (const int fd : fds)
-    if (fd >= 0)
-      (void)::close(fd);
+  for (const auto fd : fds)
+    if (gufo::platform::FileValid(fd))
+      gufo::platform::CloseFile(fd);
   if (failed) {
     Fail(error_msg, "A3B weight upload failed: " + error);
     return false;

@@ -6,9 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <unistd.h>  // fmemopen, gufo_tmpfile (compat/win32)
-#endif
 
 #include <algorithm>
 #include <array>

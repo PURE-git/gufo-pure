@@ -170,6 +170,12 @@ public:
   /// Retains the full-row sampler's FP64 filtering and normalization.
   [[nodiscard]] SamplingDistribution DistributionFromCandidates(
       std::span<const LogitCandidate> logits) const;
+  [[nodiscard]] std::optional<SamplingDistribution> DistributionFromTop(
+      std::span<const float> values, std::span<const TokenId> ids,
+      std::size_t vocab) const;
+  [[nodiscard]] std::optional<TokenId> SampleFromTop(
+      std::span<const float> values, std::span<const TokenId> ids,
+      std::size_t vocab);
   /// Retain a speculative residual draw for the next Sample call. Copies
   /// preserve this draw along with the RNG; resetting history discards it.
   void DeferSample(TokenId token);
@@ -192,6 +198,8 @@ private:
   [[nodiscard]] SamplingDistribution LinearDistribution(
       std::span<const float> logits) const;
   void PrepareSelected(std::span<const float> logits);
+  void FinishSelected(double full_softmax_sum = 0,
+                      bool has_full_softmax_sum = false);
   void FilterSelected(double full_softmax_sum = 0,
                       bool has_full_softmax_sum = false);
   [[nodiscard]] SamplingDistribution SelectedDistribution();

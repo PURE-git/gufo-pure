@@ -62,14 +62,6 @@ int qfn_mmq_quantize_q8_1(const float* X_f32, void* X_q8, int N, int K,
 // Wide projections (M >= 8192, K = 2560) accept up to 48 ungated rows.
 // The 320×10240 HC projection also accepts larger multiples of eight.
 // Only N output rows are written.
-/// The HC mixer's 320 x 10240 down projection for N <= 8 tokens with its
-/// SiluScale (silu(x * scale)) fused into the write.
-int qfn_mmq_q8_0_hc_down_silu(const void* W_q8_0, const void* X_q8,
-                              float* out_f32, int N, float scale,
-                              hipStream_t stream);
-/// Deeper load prefetch in the HC down projection for 2-8 tokens (outputs
-/// are bit-identical; one token always keeps depth 2). Off by default.
-void qfn_mmq_set_hc_down_deep_prefetch(int enabled);
 int qfn_mmq_q8_0_dense_vec_preq(const void* W_q8_0, const void* W_gate,
                                 const void* X_q8, float* out_f32, int M, int N,
                                 int K, hipStream_t stream);
@@ -94,20 +86,6 @@ int qfn_mmq_q5_1_moe_raw(
     hipStream_t stream);
 
 int qfn_mmq_q5_K_moe_raw(
-    const void * W, const float * X_f32, const int32_t * ids, float * out,
-    int M, int K, int n_tokens, int n_experts, int n_expert_used,
-    hipStream_t stream);
-
-// IQ experts (e.g. unsloth UD-IQ4_XS: IQ3_S/IQ4_XS gate/up, IQ4_NL down).
-int qfn_mmq_iq3_s_moe_raw(
-    const void * W, const float * X_f32, const int32_t * ids, float * out,
-    int M, int K, int n_tokens, int n_experts, int n_expert_used,
-    hipStream_t stream);
-int qfn_mmq_iq4_xs_moe_raw(
-    const void * W, const float * X_f32, const int32_t * ids, float * out,
-    int M, int K, int n_tokens, int n_experts, int n_expert_used,
-    hipStream_t stream);
-int qfn_mmq_iq4_nl_moe_raw(
     const void * W, const float * X_f32, const int32_t * ids, float * out,
     int M, int K, int n_tokens, int n_experts, int n_expert_used,
     hipStream_t stream);

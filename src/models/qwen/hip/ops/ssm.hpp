@@ -52,10 +52,6 @@ struct SsmSequenceState {
   SsmReplayCapture replay;
   std::uint32_t row_offset{0};
   std::uint32_t rows{0};
-  // Out-of-place update: when set, the rows start from these states and the
-  // result is written to `conv` / `recurrent`; the sources are not modified.
-  const float* conv_src{nullptr};
-  const void* recurrent_src{nullptr};
 };
 
 /// Captures the raw recurrent inputs for every row in a verification batch so

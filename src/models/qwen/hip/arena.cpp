@@ -11,7 +11,6 @@
 
 #include "src/core/hip/hip_utils.hpp"
 #include "src/core/hip/snapshot_transfer.hpp"
-#include "src/models/qwen/hip/cycle_profile.hpp"
 #include "src/models/qwen/hip/detail/attention_policy.hpp"
 #include "src/models/qwen/hip/executor.hpp"
 #include "src/models/qwen/hip/ops/gemm.hpp"
@@ -467,7 +466,6 @@ std::unique_ptr<QwenGpuSnapshot> QwenGpuArena::SaveSnapshot(
   if (valid_context > max_context_) {
     throw std::length_error("Qwen snapshot exceeds the context length");
   }
-  const qwen27::ScopedPromptStep step("target_snapshot", valid_context);
 
   auto snapshot = std::unique_ptr<QwenGpuSnapshot>(new QwenGpuSnapshot());
   snapshot->num_layers_ = config_.num_layers;
@@ -563,7 +561,6 @@ std::unique_ptr<QwenGpuSnapshot> QwenGpuArena::SaveSnapshot(
 }
 
 void QwenGpuArena::RestoreSnapshot(const QwenGpuSnapshot& snapshot) {
-  MaterializeSavedState();  // overwrites the live recurrent state
   const std::uint32_t attention_layers = config_.FullAttentionLayerCount();
   const std::uint32_t kv_width = config_.num_key_value_heads * config_.head_dim;
   const std::size_t conv_elements =
@@ -632,7 +629,6 @@ void QwenGpuArena::RestoreSnapshot(const QwenGpuSnapshot& snapshot) {
 void QwenGpuArena::RestoreCompactSnapshot(
     std::span<const std::uint8_t> payload,
     std::uint32_t expected_valid_context) {
-  MaterializeSavedState();  // overwrites the live recurrent state
   const auto layout = ParseCompactSnapshotLayout(payload);
   const std::uint32_t attention_layers = config_.FullAttentionLayerCount();
   const std::uint32_t kv_width = config_.num_key_value_heads * config_.head_dim;
@@ -965,7 +961,6 @@ QwenGpuArena::QwenGpuArena(QwenGpuArena&& other) noexcept
   replay_last_position_ = other.replay_last_position_;
   replay_captured_positions_ = other.replay_captured_positions_;
   has_saved_state_ = other.has_saved_state_;
-  saved_aliases_live_ = other.saved_aliases_live_;
   replay_capture_active_ = other.replay_capture_active_;
 
   other.d_hidden = nullptr;
@@ -1012,7 +1007,6 @@ QwenGpuArena::QwenGpuArena(QwenGpuArena&& other) noexcept
   other.replay_last_position_ = 0;
   other.replay_captured_positions_ = 0;
   other.has_saved_state_ = false;
-  other.saved_aliases_live_ = false;
   other.replay_capture_active_ = false;
 }
 
@@ -1069,7 +1063,6 @@ QwenGpuArena& QwenGpuArena::operator=(QwenGpuArena&& other) noexcept {
     replay_last_position_ = other.replay_last_position_;
     replay_captured_positions_ = other.replay_captured_positions_;
     has_saved_state_ = other.has_saved_state_;
-    saved_aliases_live_ = other.saved_aliases_live_;
     replay_capture_active_ = other.replay_capture_active_;
 
     other.d_hidden = nullptr;
@@ -1116,7 +1109,6 @@ QwenGpuArena& QwenGpuArena::operator=(QwenGpuArena&& other) noexcept {
     other.replay_last_position_ = 0;
     other.replay_captured_positions_ = 0;
     other.has_saved_state_ = false;
-    other.saved_aliases_live_ = false;
     other.replay_capture_active_ = false;
   }
   return *this;
@@ -1156,7 +1148,6 @@ void QwenGpuArena::Reset() {
   replay_last_position_ = 0;
   replay_captured_positions_ = 0;
   has_saved_state_ = false;
-  saved_aliases_live_ = false;
 }
 
 void QwenGpuArena::FreeAll() noexcept {
@@ -1277,7 +1268,6 @@ void QwenGpuArena::FreeAll() noexcept {
   replay_last_position_ = 0;
   replay_captured_positions_ = 0;
   has_saved_state_ = false;
-  saved_aliases_live_ = false;
   replay_capture_active_ = false;
   hipblas_handle = nullptr;
   stream = nullptr;

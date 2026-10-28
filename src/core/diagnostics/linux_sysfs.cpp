@@ -7,6 +7,16 @@
 #include <string_view>
 
 #include "src/core/platform/os_info.hpp"
+#ifdef _WIN32
+#include <intrin.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+extern "C" {
+unsigned long long gufo_total_physical_bytes(void);
+unsigned long long gufo_available_physical_bytes(void);
+}
+#endif
 
 namespace gufo::diagnostics {
 
@@ -71,25 +81,24 @@ namespace {
 // Windows has no /proc: CPUID supplies the names, the OS the counts.
 HostCpuInfo WindowsCpuInfo() {
   HostCpuInfo cpu;
-  unsigned regs[4] = {};
-  if (__get_cpuid(0, &regs[0], &regs[1], &regs[2], &regs[3])) {
-    char vendor[13] = {};
-    std::memcpy(vendor, &regs[1], 4);
-    std::memcpy(vendor + 4, &regs[3], 4);
-    std::memcpy(vendor + 8, &regs[2], 4);
-    cpu.vendor_id = vendor;
-  }
+  int regs[4] = {};
+  __cpuid(regs, 0);
+  char vendor[13] = {};
+  std::memcpy(vendor, &regs[1], 4);
+  std::memcpy(vendor + 4, &regs[3], 4);
+  std::memcpy(vendor + 8, &regs[2], 4);
+  cpu.vendor_id = vendor;
+
   char brand[49] = {};
   for (unsigned leaf = 0; leaf < 3; ++leaf) {
-    if (!__get_cpuid(0x80000002U + leaf, &regs[0], &regs[1], &regs[2],
-                     &regs[3]))
-      break;
+    __cpuid(regs, 0x80000002U + leaf);
     std::memcpy(brand + leaf * 16, regs, 16);
   }
   cpu.model_name = Trim(brand);
-  const long logical = sysconf(_SC_NPROCESSORS_ONLN);
-  cpu.logical_cores = logical > 0 ? static_cast<std::uint32_t>(logical) : 0;
-  cpu.physical_cores = cpu.logical_cores / 2;
+  SYSTEM_INFO sys_info;
+  GetSystemInfo(&sys_info);
+  cpu.logical_cores = sys_info.dwNumberOfProcessors;
+  cpu.physical_cores = std::max(1u, cpu.logical_cores / 2);
   return cpu;
 }
 }  // namespace

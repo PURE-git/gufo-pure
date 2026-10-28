@@ -16,6 +16,12 @@
 #include <string>
 
 #include "src/core/platform/os_info.hpp"
+#ifdef _WIN32
+extern "C" {
+unsigned long long gufo_resident_bytes(void);
+unsigned long long gufo_available_physical_bytes(void);
+}
+#endif
 
 namespace gufo::server {
 namespace {

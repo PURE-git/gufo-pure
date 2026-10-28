@@ -27,6 +27,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(GUFO_RELEASE_VERSION "development" CACHE STRING "Gufo release version")
 set(GUFO_REVISION "unknown" CACHE STRING "Gufo source revision")
 include_directories(${CMAKE_SOURCE_DIR})
+if (WIN32)
+  # Windows: POSIX shadow headers (compat/win32/include) plus their Win32
+  # implementation, linked into every target. The UCRT's own deprecated POSIX
+  # aliases are disabled so they cannot collide with the shim.
+  include_directories(BEFORE ${CMAKE_SOURCE_DIR}/compat/win32/include)
+  add_compile_definitions(_CRT_DECLARE_NONSTDC_NAMES=0 _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+  # Linux gives every thread 8 MiB of stack; Windows defaults to 1 MiB, and
+  # std::thread inherits the executable's reserve size. Match Linux.
+  add_link_options(LINKER:/STACK:8388608)
+  add_library(gufo_posix_compat STATIC
+    compat/win32/posix.cpp
+    compat/win32/spawn.cpp)
+  target_link_libraries(gufo_posix_compat PUBLIC ws2_32 psapi)
+  link_libraries(gufo_posix_compat)
+endif()
 
 # Reuse the compiler cache whenever it is installed, as the CPU check
 # derivations do. HIP kernels stay uncached: hipcc drive files and bitcode

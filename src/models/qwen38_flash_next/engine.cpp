@@ -4,8 +4,6 @@
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -38,62 +36,6 @@ void AssignError(std::string* error_msg, std::string_view message) {
   if (error_msg != nullptr) {
     *error_msg = message;
   }
-}
-
-/// DraftVocabulary::kLatinText: special tokens, tokens whose bytes are
-/// printable ASCII (or tab / newline / carriage return), and tokens that are
-/// complete UTF-8 made of ASCII plus common typographic marks. Pieces of
-/// multi-byte characters (most CJK, Cyrillic, accented letters) are left out.
-std::vector<std::int32_t> LatinTextVocabulary(
-    const tokenization::QwenTokenizer& tokenizer) {
-  constexpr char32_t kTypographic[] = {
-      0x2014, 0x2013, 0x201C, 0x201D, 0x2018, 0x2019, 0x2026, 0x2022, 0x2192,
-      0x2190, 0x2248, 0x00D7, 0x00F7, 0x00B1, 0x00B0, 0x00B7, 0x00E9};
-  const auto ascii = [](unsigned char b) {
-    return (b >= 0x20 && b < 0x7F) || b == '\t' || b == '\n' || b == '\r';
-  };
-  std::vector<std::int32_t> ids;
-  for (std::size_t id = 0; id < tokenizer.GetVocabSize(); ++id) {
-    const auto token = static_cast<tokenization::TokenId>(id);
-    if (tokenizer.IsSpecialToken(token)) {
-      ids.push_back(static_cast<std::int32_t>(id));
-      continue;
-    }
-    const std::string text = tokenizer.DecodeTokenCopy(token);
-    bool keep = !text.empty();
-    for (std::size_t i = 0; keep && i < text.size();) {
-      const auto b = static_cast<unsigned char>(text[i]);
-      if (b < 0x80) {
-        keep = ascii(b);
-        ++i;
-        continue;
-      }
-      // A complete 2- or 3-byte UTF-8 sequence for an allowed mark.
-      const std::size_t length = (b & 0xE0) == 0xC0   ? 2
-                                 : (b & 0xF0) == 0xE0 ? 3
-                                                      : 0;
-      if (length == 0 || i + length > text.size()) {
-        keep = false;
-        break;
-      }
-      char32_t cp = length == 2 ? (b & 0x1F) : (b & 0x0F);
-      for (std::size_t j = 1; j < length; ++j) {
-        const auto c = static_cast<unsigned char>(text[i + j]);
-        if ((c & 0xC0) != 0x80) {
-          keep = false;
-          break;
-        }
-        cp = (cp << 6) | (c & 0x3F);
-      }
-      keep = keep && std::find(std::begin(kTypographic), std::end(kTypographic),
-                               cp) != std::end(kTypographic);
-      i += length;
-    }
-    if (keep) {
-      ids.push_back(static_cast<std::int32_t>(id));
-    }
-  }
-  return ids;
 }
 
 constexpr std::array<char, 8> kSessionSnapshotMagic{'Q', 'F', 'N', 'S',
@@ -407,14 +349,6 @@ std::uint32_t Session::ContextSize() const noexcept {
   return session_->max_context();
 }
 
-bool Session::EnsureFrontier(std::string* error_msg) const {
-  if (!frontier_pending_) {
-    return true;
-  }
-  frontier_pending_ = false;
-  return model_->executor_->FinishFrontier(logits_.data(), error_msg);
-}
-
 void Session::Reset() {
   ResetImpl(false);
 }
@@ -651,7 +585,6 @@ bool Session::RestoreSnapshotImpl(std::span<const std::uint8_t> payload,
   ForgetDraftVocab();
   lookup_.Restore(header.lookup);
   logits_ = std::move(logits);
-  anchor_candidates_valid_ = false;
   hidden_base_ = info.position - info.hidden_rows;
   draft_token_ = 0;
   draft_length_ = restored_policy;
@@ -936,49 +869,6 @@ bool Session::Evaluate(std::int32_t token, std::string* error_msg) {
   return ok;
 }
 
-std::uint32_t Session::MaxVerifyWidth() const noexcept {
-  return MtpEnabled() ? model_->executor_->max_speculative() : 1;
-}
-
-bool Session::TeacherForce(std::span<const std::int32_t> tokens,
-                           std::vector<float>* rows, std::string* error_msg,
-                           bool prefill) {
-  if (!valid_ || tokens_.empty()) {
-    AssignError(error_msg, "teacher forcing needs a synced session");
-    return false;
-  }
-  if (!EnsureFrontier(error_msg)) {
-    return false;
-  }
-  const std::size_t n = tokens.size();
-  if (n == 0 || (prefill ? MtpEnabled() : n > MaxVerifyWidth()) ||
-      tokens_.size() + n > ContextSize()) {
-    AssignError(error_msg, "teacher forcing width or context out of range");
-    return false;
-  }
-  rocm::Executor& exec = *model_->executor_;
-  const std::size_t vocab = model_->VocabSize();
-  rows->resize(n * vocab);
-  valid_ = false;
-  anchor_candidates_valid_ = false;
-  // The same Forward calls DecodeStep makes: a one-token decode, or a verify
-  // pass whose every row is kept (the draft head is never consulted).
-  // Prefill arithmetic is the same at every chunk width.
-  const auto mode = prefill  ? rocm::Executor::ForwardMode::kPrefill
-                    : n == 1 ? rocm::Executor::ForwardMode::kDecode
-                             : rocm::Executor::ForwardMode::kVerify;
-  if (!exec.Forward(*session_, tokens, static_cast<std::uint32_t>(n),
-                    rows->data(), mode, error_msg) ||
-      (mode == rocm::Executor::ForwardMode::kVerify &&
-       !exec.Rollback(*session_, static_cast<std::uint32_t>(n), error_msg))) {
-    return false;
-  }
-  std::copy_n(rows->data() + (n - 1) * vocab, vocab, logits_.begin());
-  tokens_.insert(tokens_.end(), tokens.begin(), tokens.end());
-  valid_ = true;
-  return true;
-}
-
 struct Session::PendingDecode {
   std::vector<std::int32_t> chain;
   std::vector<MtpProposal> proposals;
@@ -987,9 +877,6 @@ struct Session::PendingDecode {
   bool sampled{false};
   bool gpu_greedy{false};
   bool gpu_verification{false};
-  // Sampled verification reads candidate lists, so the verified rows stay on
-  // the GPU; FinishDecode fetches them only for a fallback.
-  bool rows_on_device{false};
   std::size_t width{0};
   std::optional<sampling::SamplerState> draft_sampler;
   std::uint64_t draft_rng{0};
@@ -1006,67 +893,6 @@ struct Session::PendingDecode {
   std::size_t lookup_cap{0};
   std::uint32_t policy_concurrency{0};
 };
-
-namespace {
-
-/// The exact target distribution of `row` from its candidate list, or
-/// nothing when the list cannot prove it (then the caller uses the row).
-std::optional<sampling::SamplingDistribution> FastDistribution(
-    const sampling::SamplerState& sampler, const MtpCandidateLogits& list,
-    std::span<const float> row) {
-  return sampler.DistributionFromTop(std::span(list.logits).first(list.size),
-                                     std::span(list.ids).first(list.size),
-                                     row.size());
-}
-
-/// True when every finite candidate still matches `row` bit for bit: the
-/// list was selected from this very row.
-bool CandidatesMatch(const MtpCandidateLogits& list,
-                     std::span<const float> row) {
-  for (std::size_t i = 0; i < list.size; ++i) {
-    if (!std::isfinite(list.logits[i])) {
-      continue;
-    }
-    if (list.ids[i] >= row.size() ||
-        std::memcmp(&list.logits[i], &row[list.ids[i]], sizeof(float)) != 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
-}  // namespace
-
-namespace {
-// Sampled drafting stops once the chain is unlikely to survive: each
-// proposal multiplies an acceptance estimate looked up from the draft head's
-// own top probability, and drafting ends when the product falls below
-// kMtpSurvivalFloor (the dropped proposal is not verified). The decision
-// uses only draft-side probabilities, so rejection-sampling verification
-// keeps the target distribution exact. Table: P(accept | reached) by draft
-// depth (first, later) and top-probability bin, measured over 2130 full
-// 7-draft cycles on Windows (2026-09-25); replayed offline it beat the
-// per-cycle length controller by ~7.7% on held-out cycles.
-constexpr std::array<float, 8> kMtpTopBins = {0.30F, 0.50F, 0.70F, 0.80F,
-                                              0.90F, 0.95F, 0.99F, 2.0F};
-constexpr std::array<std::array<float, 8>, 2> kMtpAcceptByTop = {{
-    {0.400F, 0.506F, 0.615F, 0.595F, 0.635F, 0.774F, 0.825F, 0.947F},
-    {0.337F, 0.484F, 0.522F, 0.584F, 0.640F, 0.711F, 0.702F, 0.935F},
-}};
-constexpr float kMtpSurvivalFloor = 0.40F;
-
-float MtpAcceptEstimate(std::size_t depth, const MtpProposal& proposal) {
-  float top = 0;
-  for (std::size_t i = 0; i < proposal.size; ++i) {
-    top = std::max(top, proposal.probabilities[i]);
-  }
-  std::size_t bin = 0;
-  while (top >= kMtpTopBins[bin]) {
-    ++bin;
-  }
-  return kMtpAcceptByTop[depth == 0 ? 0 : 1][bin];
-}
-}  // namespace
 
 void Session::AppendDraft(PendingDecode& pending) {
   if (pending.sampled) {
@@ -1171,25 +997,7 @@ bool Session::PrepareDecode(const DecodeRequest& request,
     result->stop = true;
     return true;
   }
-  // After a sampled MTP cycle logits_ is the kept verification row, whose
-  // candidate list FinishDecode left behind: sample it without a full scan.
-  std::optional<sampling::TokenId> fast_anchor;
-  if (anchor_candidates_valid_) {
-    anchor_candidates_valid_ = false;
-    // A frontier row still in flight is the very row the verify graph
-    // selected these candidates from (FinishDecode).
-    if (frontier_pending_ || CandidatesMatch(anchor_candidates_, logits_)) {
-      fast_anchor = sampler.SampleFromTop(
-          std::span(anchor_candidates_.logits).first(anchor_candidates_.size),
-          std::span(anchor_candidates_.ids).first(anchor_candidates_.size),
-          logits_.size());
-    }
-  }
-  if (!fast_anchor && !EnsureFrontier(error_msg)) {
-    return false;
-  }
-  const auto anchor = static_cast<std::int32_t>(
-      fast_anchor ? *fast_anchor : sampler.Sample(logits_));
+  const auto anchor = static_cast<std::int32_t>(sampler.Sample(logits_));
   if (is_stop(anchor)) {
     result->stop = true;
     return true;
@@ -1323,28 +1131,6 @@ bool Session::FinishDecode(const DecodeRequest& request,
   if (gpu_greedy &&
       !exec.GreedyMtpPredictions(std::span(greedy).first(k - 1), sampler,
                                  std::span(chain).subspan(1), error_msg)) {
-    return false;
-  }
-  // Tuning::fast_sampling: sampled verification reads GPU-selected
-  // candidate lists instead of scanning full host rows (exact, see
-  // FastDistribution); without them it falls back to the rows.
-  std::array<MtpCandidateLogits, kMaxMtpDraftTokens + 1> candidates{};
-  std::string candidate_error;
-  const bool have_candidates =
-      sampled && platform::PlatformTuning().fast_sampling &&
-      k <= candidates.size() && sampler.config().top_k > 0 &&
-      !sampler.config().penalties_enabled() &&
-      exec.VerifyCandidates(std::span(candidates).first(k), &candidate_error);
-  // Full rows kept on the GPU are fetched once, only when a row is needed.
-  bool rows_ready = !pending.rows_on_device;
-  const auto ensure_rows = [&] {
-    if (!rows_ready) {
-      rows_ready =
-          exec.DownloadVerification(k, verify_logits_.data(), error_msg);
-    }
-    return rows_ready;
-  };
-  if (sampled && !have_candidates && !ensure_rows()) {
     return false;
   }
   std::uint32_t keep = 1;
@@ -1514,7 +1300,7 @@ bool Session::DecodeStep(std::size_t max_tokens,
           *session_, pending.chain, pending.chain.size(), logits,
           pending.speculative ? rocm::Executor::ForwardMode::kVerify
                               : rocm::Executor::ForwardMode::kDecode,
-          error_msg, pending.rows_on_device)) {
+          error_msg)) {
     return false;
   }
   const bool ok = FinishDecode(request, pending, error_msg);
@@ -1660,11 +1446,6 @@ bool Session::DecodeBatchImpl(std::span<const DecodeRequest> requests,
         r.max_tokens, *r.sampler, r.result, &r.outcome->error, r.stop_at_eos);
     return r.outcome->completed;
   }
-  for (const auto& r : requests) {
-    if (!r.session->EnsureFrontier(error_msg)) {
-      return false;
-    }
-  }
   auto& exec = *requests.front().session->model_->executor_;
   std::optional<std::uint32_t> batch_drafts;
   std::uint32_t batch_context = 0;
@@ -1807,7 +1588,6 @@ bool Session::DecodeBatchImpl(std::span<const DecodeRequest> requests,
       r.outcome->completed = true;
       continue;
     }
-    session.anchor_candidates_valid_ = false;
     float* logits = !p.speculative       ? session.logits_.data()
                     : p.gpu_verification ? nullptr
                                          : session.verify_logits_.data();
@@ -1842,11 +1622,6 @@ bool Session::EvaluateBatchImpl(std::span<const AdvanceRequest> requests,
     r.outcome->completed = r.session->Evaluate(r.token, &r.outcome->error);
     return r.outcome->completed;
   }
-  for (const auto& r : requests) {
-    if (!r.session->EnsureFrontier(error_msg)) {
-      return false;
-    }
-  }
   auto& exec = *requests.front().session->model_->executor_;
   if (!DraftCatchUpBatch(requests, error_msg))
     return false;
@@ -1865,7 +1640,6 @@ bool Session::EvaluateBatchImpl(std::span<const AdvanceRequest> requests,
       continue;
     }
     try {
-      session.anchor_candidates_valid_ = false;
       if (!exec.SelectBatchLogits(i, 1, session.logits_.data(), &outcome.error))
         continue;
       session.hidden_base_ = static_cast<std::uint32_t>(session.tokens_.size());

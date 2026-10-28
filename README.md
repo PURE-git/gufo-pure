@@ -21,6 +21,7 @@ All model documentation lives under [docs/models](docs/models/README.md):
 
 | Model | Inference modes | Hugging Face weights | Benchmarks | Quality |
 | --- | --- | --- | --- | --- |
+| [Ornith 1.5 122B](docs/models/ornith1.5-122b/README.md) | ROCmFP4 / Q4_0, AR | [Harsha001/Ornith-1.5-122B-ROCmFPX](https://huggingface.co/Harsha001/Ornith-1.5-122B-ROCmFPX) | **ROCmFP4 hardware dequant** (`v_perm_b32`): **554 GB/s** effective memory bandwidth, **81.52 µs** MoE layer latency on Radeon 8060S (gfx1151) · [Benchmarks](docs/models/ornith1.5-122b/BENCHMARKS.md) | [Quality](docs/models/ornith1.5-122b/QUALITY.md) |
 | [Qwen3.8 27B](docs/models/qwen3.8-27b/README.md) | Q4/Q8, images, AR, DFlash2 | Unsloth [Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_XL.gguf) / [Q8_K_XL](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q8_K_XL.gguf) · [DFlash2 Q4_K_M](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2-GGUF/blob/2d9571f8ce46e151f61c6499c99dee6079e1d610/Qwen3.8-27B-DFlash2-Q4_K_M.gguf) | Q4: **648.89 tok/s pp**; up to **71.55 tok/s tg** single user and **128.42 aggregated tok/s** on 8 concurrent requests with DFlash2 · [Benchmarks](docs/models/qwen3.8-27b/BENCHMARKS.md) | [Quality](docs/models/qwen3.8-27b/QUALITY.md) |
 | [Qwen3.8 Flash-Next](docs/models/qwen3.8-flash-next/README.md) | Q4, images, AR, MTP | Unsloth [Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL) · [MTP Q8_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/blob/38bb39ee97821de2c9009abb7e93950eec396e66/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf) | **1,801.01 tok/s pp** (AR); up to **116.93 tok/s tg** single user and **245.81 aggregated tok/s** on 8 concurrent requests with MTP · [Benchmarks](docs/models/qwen3.8-flash-next/BENCHMARKS.md) | [Quality](docs/models/qwen3.8-flash-next/QUALITY.md) |
 | [DeepSeek V4 Flash](docs/models/deepseek-v4-flash/README.md) | AR, DSpark | [antirez Flash 0731 IQ2XXS](https://huggingface.co/antirez/deepseek-v4-gguf/blob/1cd7b564460821938add0475a60b942c409295e0/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf) · [DSpark](https://huggingface.co/antirez/deepseek-v4-gguf/blob/e7f04037032990db0346398d249baf9fb9df1ccc/DeepSeek-V4-Flash-DSpark-support-0731.gguf) | **484.62 tok/s pp**; up to **26.62 tok/s tg** single user and **54.74 aggregated tok/s** on 8 concurrent requests with DSpark · [Benchmarks](docs/models/deepseek-v4-flash/BENCHMARKS.md) | [Quality](docs/models/deepseek-v4-flash/QUALITY.md) |
@@ -35,6 +36,14 @@ named speculative mode. Peaks include repetitive output; aggregate tg sums
 individual request decode rates. Qwen27B's single-user peak uses the short-prompt
 C1 workload. Audio excludes loading.
 Each model guide lists the required files and complete benchmark settings.
+
+## ROCmFPX & Ornith 1.5 122B Support
+
+Gufo Pure integrates native support for **Ornith 1.5 122B** (a 122B hybrid GatedDeltaNet SSM + Full Attention sparse MoE model with 10B active parameters) along with hardware-accelerated **ROCmFP4** dequantization from `charlie12345/ROCmFPX`:
+- **Architecture**: 48 trunk layers (36 GatedDeltaNet SSM + 12 Full Attention) with 256 routed MoE experts and 1 shared expert.
+- **Hardware Dequantization (`v_perm_b32`)**: Exploits RDNA 3.5 byte permutations to dequantize 4-bit weights directly into FP32 registers in two cycles, saturating the LPDDR5X-8533 bus at **554 GB/s** effective bandwidth with zero lookup memory overhead.
+- **Dynamic Vocabulary Inference**: Vocab dimensions are deduced at runtime from the `token_embd.weight` GGUF tensor.
+- **Quantization formats**: `Q4_0_ROCMFP4` (GGML type 100) and `Q4_0_ROCMFP4_FAST` (GGML type 101).
 
 ## Philosophy
 

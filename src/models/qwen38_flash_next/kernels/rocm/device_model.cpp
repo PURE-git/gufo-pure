@@ -9,8 +9,6 @@
 
 #include "src/core/hip/managed_alloc.hpp"
 #include "src/core/hip/weight_upload.hpp"
-#include "src/core/platform/tuning.hpp"
-#include "src/core/quant/ggml_dequant.hpp"
 #include "src/models/qwen38_flash_next/kernels/rocm/kernels.hpp"
 #include "src/models/qwen38_flash_next/kernels/rocm/mmq/qfn_mmq.h"
 
@@ -107,62 +105,6 @@ struct Uploader {
     if (t.type == core::GgmlType::kQ8_0 && t.experts == 1) {
       max_q8_cols = std::max<std::size_t>(max_q8_cols, t.cols);
     }
-    return d;
-  }
-
-  /// A Q6_K matrix (the output head of unsloth UD-IQ4_XS) re-encoded as
-  /// Q8_0 on the host, so it runs on the tuned Q8_0 dense tier instead of a
-  /// path the HIP kernels do not have.
-  DeviceTensor CopyQ6KAsQ8_0(const TensorRef& t) {
-    DeviceTensor d;
-    if (t.empty() || !ok) {
-      return d;
-    }
-    if (t.cols % 256 != 0 || t.experts != 1) {
-      Fail("Q6_K tensor " + std::string(t.name) + " has an unsupported shape");
-      return d;
-    }
-    const std::size_t src_row = t.cols / 256 * 210;
-    const std::size_t dst_row = t.cols / 32 * 34;
-    const std::size_t size = dst_row * t.rows;
-    void* ptr = nullptr;
-    if (hipMalloc(&ptr, size + kTailMargin) != hipSuccess) {
-      Fail("hipMalloc failed for " + std::string(t.name));
-      return d;
-    }
-    allocations.push_back(ptr);
-    bytes += size + kTailMargin;
-    const auto* src = static_cast<const std::uint8_t*>(t.data);
-    constexpr std::size_t kChunkRows = 16384;
-    std::vector<std::uint8_t> host(kChunkRows * dst_row);
-    const std::size_t workers =
-        std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    for (std::size_t r0 = 0; r0 < t.rows; r0 += kChunkRows) {
-      const std::size_t rows = std::min<std::size_t>(kChunkRows, t.rows - r0);
-      const std::size_t per = (rows + workers - 1) / workers;
-      std::vector<std::jthread> pool;
-      for (std::size_t w = 0; w < workers && w * per < rows; ++w) {
-        const std::size_t begin = w * per;
-        const std::size_t count = std::min(per, rows - begin);
-        pool.emplace_back([&, begin, count] {
-          Q6KRowsToQ8_0(src + (r0 + begin) * src_row,
-                        host.data() + begin * dst_row, count, t.cols);
-        });
-      }
-      pool.clear();
-      if (hipMemcpy(static_cast<std::uint8_t*>(ptr) + r0 * dst_row, host.data(),
-                    rows * dst_row, hipMemcpyHostToDevice) != hipSuccess) {
-        Fail("upload failed for " + std::string(t.name));
-        return d;
-      }
-    }
-    (void)hipMemset(static_cast<std::uint8_t*>(ptr) + size, 0, kTailMargin);
-    d.data = ptr;
-    d.type = core::GgmlType::kQ8_0;
-    d.cols = static_cast<std::uint32_t>(t.cols);
-    d.rows = static_cast<std::uint32_t>(t.rows);
-    d.experts = 1;
-    max_q8_cols = std::max<std::size_t>(max_q8_cols, t.cols);
     return d;
   }
 
@@ -343,9 +285,9 @@ struct Uploader {
     d.ple_norm_conv = Copy(l.ple_norm_conv);
     d.ple_conv1d = Copy(l.ple_conv1d);
     d.router = Stack({&l.router, &l.shexp_gate_inp});
-    if (!defer_experts) {
-      Experts(l, d);
-    }
+    d.ffn_gate_exps = Copy(l.ffn_gate_exps);
+    d.ffn_up_exps = Copy(l.ffn_up_exps);
+    d.ffn_down_exps = Copy(l.ffn_down_exps);
     d.shexp_gate = Copy(l.shexp_gate);
     d.shexp_up = Copy(l.shexp_up);
     d.shexp_down = Copy(l.shexp_down);
@@ -416,11 +358,9 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
     const MtpWeights* mtp, const core::GgufReader* mtp_reader,
     std::string* error_msg) {
   // The CPU reference also reads Q6_K, but the production embedding, dense
-  // and routed kernels do not. Reject it before allocating device weights;
-  // the embedding and output head are re-encoded as Q8_0 instead.
+  // and routed kernels do not. Reject it before allocating device weights.
   const auto supported = [&](const TensorRef& t) {
-    if (t.type != core::GgmlType::kQ6_K || &t == &w.token_embd ||
-        &t == &w.output)
+    if (t.type != core::GgmlType::kQ6_K)
       return true;
     if (error_msg != nullptr)
       *error_msg = "unsupported HIP tensor format Q6_K: " + std::string(t.name);

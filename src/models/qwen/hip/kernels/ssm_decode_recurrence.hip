@@ -108,14 +108,6 @@ __global__ void SSMConvKernel(
     return;
 
   const std::size_t c_off = c * 4;
-  // Out-of-place: this thread owns channel c's four slots; start them from
-  // the source state, then update the destination exactly as in place.
-  if (conv_src != nullptr) {
-    conv_state[c_off + 0] = conv_src[c_off + 0];
-    conv_state[c_off + 1] = conv_src[c_off + 1];
-    conv_state[c_off + 2] = conv_src[c_off + 2];
-    conv_state[c_off + 3] = conv_src[c_off + 3];
-  }
   const bool capture =
       replay_capture.qkv != nullptr && replay_capture.position != nullptr &&
       replay_capture.enabled != nullptr && replay_capture.enabled[0] != 0U;
@@ -278,7 +270,7 @@ void LaunchSSMConvRecurrenceBatch(
         out_buf ? out_buf + offset * inner_row_stride : nullptr, layer_idx,
         qkv_size, num_key_heads, num_heads, key_dim, val_dim, sequence.rows,
         projection_row_stride, inner_row_stride, stream, sequence.replay,
-        state_storage, sequence.conv_src, sequence.recurrent_src);
+        state_storage);
     return;
   }
   // Each block takes its state pointers from its sequence; pinned and in-place

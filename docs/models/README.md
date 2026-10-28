@@ -6,6 +6,7 @@ are downloaded separately and are not part of the runtime package.
 
 | Model | Weights / supported inputs | Guide |
 | --- | --- | --- |
+| [Ornith 1.5 122B](ornith1.5-122b/README.md) | ROCmFP4 / Q4_0 GGUF (qwen35moe); text | [Usage and modes](ornith1.5-122b/README.md) |
 | DeepSeek V4 Flash | Flash 0731 mixed IQ2/Q2/Q8 GGUF; text | [Usage and modes](deepseek-v4-flash/README.md) |
 | Qwen3.8 27B | Q4/Q8 GGUF; text/images | [Usage and modes](qwen3.8-27b/README.md) |
 | Qwen3.8 Flash-Next | Sharded Q4 GGUF; text/images | [Usage and modes](qwen3.8-flash-next/README.md) |
